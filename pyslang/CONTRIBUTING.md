@@ -33,3 +33,13 @@ source venv/bin/activate
 ```bash
 pip install .
 ```
+
+## Generate Python Type Stubs
+
+Update the pyslang stubs (located at `/pyslang/pyslang/__init__.pyi`) by running the following commands:
+
+```bash
+# First, cd to the root of the slang repository.
+pip install .
+pybind11-stubgen pyslang -o pyslang/ --root-suffix ''
+```
