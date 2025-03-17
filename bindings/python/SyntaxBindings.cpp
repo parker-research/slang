@@ -50,6 +50,55 @@ struct PySyntaxVisitor : public PyVisitorBase<PySyntaxVisitor, SyntaxVisitor> {
     }
 };
 
+// Trampoline class to expose protected base methods
+struct PySyntaxRewriterTrampoline : public SyntaxRewriter<PySyntaxRewriterTrampoline> {
+    using SyntaxRewriter::SyntaxRewriter;
+
+    void remove(const SyntaxNode& node) { SyntaxRewriter<PySyntaxRewriterTrampoline>::remove(node); }
+    void replace(const SyntaxNode& oldNode, SyntaxNode& newNode) { SyntaxRewriter<PySyntaxRewriterTrampoline>::replace(oldNode, newNode); }
+    void insertBefore(const SyntaxNode& oldNode, SyntaxNode& newNode) { SyntaxRewriter<PySyntaxRewriterTrampoline>::insertBefore(oldNode, newNode); }
+    void insertAfter(const SyntaxNode& oldNode, SyntaxNode& newNode) { SyntaxRewriter<PySyntaxRewriterTrampoline>::insertAfter(oldNode, newNode); }
+    
+    SyntaxFactory& getFactory() { return factory; }
+};
+
+struct PySyntaxRewriter : public PySyntaxRewriterTrampoline {
+    py::object f;
+    bool interrupted = false;
+
+    static inline constexpr auto doc =
+        "Rewrites a syntax tree by applying transformations specified in callback `f`.\n\n"
+        "The callback function `f` takes a single argument, which is the current syntax node "
+        "being visited. The callback can use the following methods to modify the tree:\n"
+        "- remove(node): Removes the given node from the tree\n"
+        "- replace(old_node, new_node): Replaces old_node with new_node\n"
+        "- insert_before(old_node, new_node): Inserts new_node before old_node\n"
+        "- insert_after(old_node, new_node): Inserts new_node after old_node\n"
+        "\n"
+        "Returns a new transformed SyntaxTree object.";
+
+    explicit PySyntaxRewriter(py::object f) : f{f} {}
+
+    template<typename T>
+    void handle(const T& t) {
+        if (interrupted)
+            return;
+
+        py::object result = f(&t);
+        if (result.equal(py::cast(VisitAction::Interrupt))) {
+            interrupted = true;
+            return;
+        }
+        if (result.not_equal(py::cast(VisitAction::Skip)))
+            this->visitDefault(t);
+    }
+};
+
+std::shared_ptr<SyntaxTree> pySyntaxRewrite(std::shared_ptr<SyntaxTree> tree, py::object f) {
+    PySyntaxRewriter rewriter{f};
+    return rewriter.transform(tree);
+}
+
 void pySyntaxVisit(const SyntaxNode& sn, py::object f) {
     PySyntaxVisitor visitor{f};
     sn.visit(visitor);
@@ -61,6 +110,16 @@ void registerSyntax(py::module_& m) {
     EXPOSE_ENUM(m, TriviaKind);
     EXPOSE_ENUM(m, TokenKind);
     EXPOSE_ENUM(m, SyntaxKind);
+
+    py::class_<PySyntaxRewriter>(m, "_SyntaxRewriter")
+        .def(py::init<py::object>(), "f"_a)
+        .def("remove", &PySyntaxRewriter::remove, "node"_a)
+        .def("replace", &PySyntaxRewriter::replace, "old_node"_a, "new_node"_a)
+        .def("insert_before", &PySyntaxRewriter::insertBefore, "old_node"_a, "new_node"_a)
+        .def("insert_after", &PySyntaxRewriter::insertAfter, "old_node"_a, "new_node"_a)
+        .def_property_readonly("factory", [](PySyntaxRewriter& self) { return &self.getFactory(); });
+
+    m.def("rewrite", &pySyntaxRewrite, "tree"_a, "f"_a, PySyntaxRewriter::doc);
 
     py::class_<Trivia>(m, "Trivia")
         .def(py::init<>())
@@ -125,7 +184,7 @@ void registerSyntax(py::module_& m) {
                                })
         .def(py::self == py::self)
         .def(py::self != py::self)
-        .def("__bool__", &Token::operator bool)
+        .def("__bool__", [](const Token& t) { return bool(t); })
         .def("__repr__",
              [](const Token& self) {
                  return fmt::format("Token(TokenKind.{})", toString(self.kind));
